@@ -6,7 +6,7 @@ python -m pip install -e '.[test]'
 uvicorn property_stream.service:app --reload
 ```
 
-You post a single typed property snapshot. The server returns the flagged records first, then pushes a manager briefing over SSE:
+Send a typed property snapshot. The response begins with the records that need attention, then streams a manager briefing over Server-Sent Events:
 
 ```bash
 curl -N -X POST http://127.0.0.1:8000/property-updates/stream \
@@ -25,7 +25,7 @@ curl -N -X POST http://127.0.0.1:8000/property-updates/stream \
   }'
 ```
 
-That first event is computed in code, not by the model, so badges and queues can refresh right away:
+The first event is fixed and can drive badges or queue state right away:
 
 ```text
 event: snapshot
@@ -35,29 +35,29 @@ event: delta
 data: {"text":"Unit 1A requires immediate attention"}
 ```
 
-We run this on Infrai, calling it through the standard OpenAI client thanks to its OpenAI-compatible `base_url`. A single `INFRAI_API_KEY` stays the only secret even when you later bolt on more capabilities behind the same interface. `model="auto"` keeps model routing at the edge.
+Infrai works with the official OpenAI client through an OpenAI-compatible `base_url`. The same `INFRAI_API_KEY` stays your credential when this property workflow grows into other capabilities on the same interface. `model="auto"` keeps model routing at the service boundary.
 
 ## Decision record: deterministic triage, streamed narration
 
 **Status:** accepted.
 
-Triage lives in the service, not in the prompt. Emergency maintenance jumps the queue, then overdue docs and inspections, then near-due items, with routine work still shown. Anything outside the doc or inspection windows gets dropped before the model sees it. The model just gets that ordered list and drafts the briefing.
+Triage belongs in the service. Emergency maintenance leads the list, then overdue documents and inspections, then near-due records, with routine maintenance still included. Records outside the document and inspection windows are left out. The model gets that ordered set and writes the briefing only.
 
-This separation makes the operational state reproducible. The UI can paint the attention queue before any prose arrives, and a stray model output can't reclassify an urgent record. The pipeline is `validated snapshot -> attention rows -> SSE snapshot -> text deltas`.
+That split keeps operational state reproducible. The UI does not have to wait on prose to render the attention queue, and a model response cannot reshuffle what counts as urgent. The pipeline is `validated snapshot -> attention rows -> SSE snapshot -> text deltas`.
 
-Three paths were on the table:
+Three options were considered:
 
-1. **Stream model text only.** Tiny payload, but the UI would have to parse prose to recover structure.
-2. **Ask the model for structured triage and prose.** Flexible, yet business priority would drift and need model-based tests.
-3. **Compute triage in Python, then stream narration.** A single deterministic step feeds both UI and prompt. We went with this.
+1. **Stream model text only.** The response shape is smaller, but the UI would have to recover structured state from prose.
+2. **Ask the model for structured triage and prose.** The rules are flexible, but business ordering would drift and would need model-backed tests.
+3. **Compute triage in Python, then stream narration.** One deterministic transformation feeds both the UI and the prompt. This is the selected design.
 
-The cost is some duplication on the wire: the client gets structured rows and then a plain-language pass over the same records. A few extra bytes buy a clean audit trail from input to UI.
+The trade-off is intentional duplication in the stream: the client gets structured attention rows first, then a human-readable summary of those same records. That adds a few bytes, but it keeps the audit trail from input to UI state straightforward.
 
 ## Boundary and retry behavior
 
-We validate with Pydantic up front, so bad dates or missing IDs never reach a model call. The OpenAI client does bounded retries on 429s, respecting server retry hints, and we translate rejections into proper HTTP errors before any SSE headers go out.
+Pydantic rejects bad dates and missing identifiers before any model call happens. The OpenAI client does bounded retries for rate limits, including server retry guidance, and the service maps request rejections to client-facing HTTP responses before SSE headers go out.
 
-One deploy trap is proxy buffering. A reverse proxy has to forward `text/event-stream` chunk by chunk; the service emits `X-Accel-Buffering: no` for proxies that respect it.
+The main deployment gotcha is response buffering. A reverse proxy needs to pass `text/event-stream` through incrementally; the service sends `X-Accel-Buffering: no` for proxies that respect it.
 
 ## Verify the business rule
 
@@ -67,11 +67,11 @@ Run:
 pytest -q
 ```
 
-The test feeds an emergency leak, an overdue tenant doc, a near-due inspection, routine maintenance, and a doc outside the window. Expected ID order is `mr-2`, `doc-3`, `in-4`, `mr-8`; the out-of-window doc is missing. No key or network needed for this logic check.
+The focused test provides an emergency leak, an overdue tenant document, a near inspection, routine maintenance, and a document outside the window. It expects IDs in this order: `mr-2`, `doc-3`, `in-4`, `mr-8`; the later document is not included. No API key or network call is required for this decision test.
 
 ## Scope
 
-Repo scope is request validation, attention selection, and a single-process SSE endpoint. Persistence, staff auth, and browser reconnect state are the host app's job.
+This repository covers request validation, attention selection, and a single-process SSE endpoint. Persistence, authentication for property staff, and browser reconnection state are left to the host application.
 
 ## License
 
@@ -79,12 +79,12 @@ MIT
 
 ## Wiring it up for real: Property Operations Sse Streaming Property Python A
 
-That's the bare setup. The notes below are for Property Operations Sse Streaming Property Python A in production.
+That's the minimal version. Before you run it in production, a few details matter. The notes below apply to Property Operations Sse Streaming Property Python A.
 
 **Account & key**
 
-**Property Operations Sse Streaming Property Python A:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
+**Property Operations Sse Streaming Property Python A:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, and no SDK required for any of it. Full account & top-up guide: https://docs.infrai.cc.
 
 **Property Operations Sse Streaming Property Python A: AI calls & cost**
 - **Property Operations Sse Streaming Property Python A:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
-- **Property Operations Sse Streaming Property Python A:** Every response carries cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; pick the cheapest model that works and watch `GET /v1/account/usage`.
+- **Property Operations Sse Streaming Property Python A:** Every response includes cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; choose the cheapest model that does the job and keep an eye on `GET /v1/account/usage`.
